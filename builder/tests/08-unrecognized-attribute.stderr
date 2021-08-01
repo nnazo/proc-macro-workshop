@@ -1,5 +1,5 @@
 error: expected `builder(each = "...")`
-  --> $DIR/08-unrecognized-attribute.rs:22:7
+  --> $DIR/08-unrecognized-attribute.rs:23:5
    |
-22 |     #[builder(eac = "arg")]
-   |       ^^^^^^^^^^^^^^^^^^^^
+23 |     args: Vec<String>,
+   |     ^^^^

@@ -59,7 +59,7 @@ fn get_struct_fields(
     }
 }
 
-fn get_each_attr_name(attr: &Attribute) -> Option<String> {
+fn get_each_attr_name(attr: &Attribute) -> Option<(String, Option<String>)> {
     let ident = attr.path.get_ident()?;
     if ident == "builder" {
         let meta = attr.parse_meta();
@@ -81,16 +81,17 @@ fn get_each_attr_name(attr: &Attribute) -> Option<String> {
 
         match meta {
             Meta::NameValue(name_value) => {
-                if name_value.path.get_ident()? == "each" {
+                let ident = name_value.path.get_ident()?;
+                if ident == "each" {
                     match &name_value.lit {
                         syn::Lit::Str(name) => {
                             let name = name.value();
-                            Some(name.replace("\"", ""))
+                            Some((ident.to_string(), Some(name.replace("\"", ""))))
                         }
-                        _ => None,
+                        _ => Some((ident.to_string(), None)),
                     }
                 } else {
-                    None
+                    Some((ident.to_string(), None))
                 }
             }
             _ => None,
@@ -102,7 +103,7 @@ fn get_each_attr_name(attr: &Attribute) -> Option<String> {
 
 struct VecInfo<'a> {
     inner_ty: &'a Type,
-    each_method_name: Option<String>,
+    each_method_name: Option<(String, Option<String>)>,
 }
 
 fn vec_inner_type(ty: &Type) -> Option<&Type> {
@@ -173,29 +174,40 @@ fn generate_builder_struct(struct_name: &Ident, r#struct: &DataStruct) -> (Ident
             };
 
             match each_setter {
-                Some(each_setter) => {
-                    let each_setter_name = vec
+                Some(Ok(each_setter)) => {
+                    // match each_setter {
+                    // Some(each_setter) => {
+                    let (_attr, each_setter_name) = vec
                         .as_ref()
-                        .expect("has setter")
+                        .expect("has attr")
                         .each_method_name
                         .as_ref()
-                        .expect("has setter");
+                        .expect("has attr");
 
-                    let each_setter_name = each_setter_name
-                        .to_token_stream()
-                        .to_string()
-                        .replace("\"", "");
-                    let field = field.to_token_stream();
+                    match each_setter_name.as_ref() {
+                        Some(each_setter_name) => {
+                            let each_setter_name = each_setter_name
+                                .to_token_stream()
+                                .to_string()
+                                .replace("\"", "");
+                            let field = field.to_token_stream();
 
-                    if each_setter_name != field.to_string() {
-                        quote! {
-                            #each_setter
-                            #setter
+                            if each_setter_name != field.to_string() {
+                                quote! {
+                                    #each_setter
+                                    #setter
+                                }
+                            } else {
+                                each_setter
+                            }
                         }
-                    } else {
-                        each_setter
+                        _ => {
+                            // compile error
+                            each_setter
+                        }
                     }
                 }
+                Some(Err(err)) => err.to_compile_error(),
                 _ => setter,
             }
         },
@@ -219,23 +231,29 @@ fn generate_builder_struct(struct_name: &Ident, r#struct: &DataStruct) -> (Ident
     )
 }
 
-fn generate_each_setter_fn(field: &Ident, vec_info: &VecInfo) -> Option<TokenStream> {
+fn generate_each_setter_fn(field: &Ident, vec_info: &VecInfo) -> Option<syn::Result<TokenStream>> {
     match &vec_info.each_method_name {
-        Some(each_method_name) => {
-            let ty = vec_info.inner_ty.to_token_stream();
-            let each_method_name = TokenStream::from_str(each_method_name)
-                .expect("Could not make token stream from string for `each = ...`");
+        Some((_attr, each_method_name)) => match each_method_name {
+            Some(each_method_name) => {
+                let ty = vec_info.inner_ty.to_token_stream();
+                let each_method_name = TokenStream::from_str(each_method_name)
+                    .expect("Could not make token stream from string for `each = ...`");
 
-            Some(quote! {
-                pub fn #each_method_name (&mut self, #field: #ty) -> &mut Self {
-                    if self.#field.is_none() {
-                        self.#field = ::std::option::Option::Some(::std::vec![]);
+                Some(Ok(quote! {
+                    pub fn #each_method_name (&mut self, #field: #ty) -> &mut Self {
+                        if self.#field.is_none() {
+                            self.#field = ::std::option::Option::Some(::std::vec![]);
+                        }
+                        self.#field.as_mut().expect("Initialized vec").push(#field);
+                        self
                     }
-                    self.#field.as_mut().expect("Initialized vec").push(#field);
-                    self
-                }
-            })
-        }
+                }))
+            }
+            _ => Some(Err(syn::Error::new(
+                field.span(),
+                r#"expected `builder(each = "...")`"#,
+            ))),
+        },
         _ => None,
     }
 }
